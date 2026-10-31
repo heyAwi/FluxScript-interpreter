@@ -125,6 +125,11 @@ Expected output:
 ```text
 Hello from FluxScript!
 ```
+VS Code should look like this:
+
+<img width="1366" height="768" alt="image" src="https://github.com/user-attachments/assets/5c72fb3a-f03e-4e50-aff0-f1909915e14d" />
+
+Note: im running snake just for example.
 
 ## 6. Troubleshooting
 
