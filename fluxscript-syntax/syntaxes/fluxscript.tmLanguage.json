@@ -1,0 +1,154 @@
+{
+    "name": "FluxScript",
+    "scopeName": "source.fluxscript",
+    "fileTypes": [
+        "flux"
+    ],
+    "patterns": [
+        {
+            "name": "comment.block.fluxscript",
+            "begin": "--\\[\\[",
+            "end": "\\]\\]"
+        },
+        {
+            "name": "comment.line.double-slash.fluxscript",
+            "match": "^\\s*//[^\\n]*$"
+        },
+        {
+            "name": "comment.line.double-slash.fluxscript",
+            "match": "//(?=\\s*(?:$|[^A-Za-z0-9_(+\\-]))[^\\n]*"
+        },
+        {
+            "name": "string.quoted.double.fluxscript",
+            "begin": "(?<![A-Za-z0-9_])(?:[rf])?\"",
+            "end": "\"",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.fluxscript",
+                    "match": "\\\\."
+                },
+                {
+                    "name": "meta.interpolation.fluxscript",
+                    "begin": "\\{",
+                    "end": "\\}",
+                    "patterns": [
+                        {
+                            "name": "variable.other.fluxscript",
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "string.quoted.single.fluxscript",
+            "begin": "(?<![A-Za-z0-9_])(?:[rf])?'",
+            "end": "'",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.fluxscript",
+                    "match": "\\\\."
+                },
+                {
+                    "name": "meta.interpolation.fluxscript",
+                    "begin": "\\{",
+                    "end": "\\}",
+                    "patterns": [
+                        {
+                            "name": "variable.other.fluxscript",
+                            "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "keyword.control.import.fluxscript",
+            "match": "\\bget\\b"
+        },
+        {
+            "name": "keyword.control.flow.fluxscript",
+            "match": "\\b(?:if|elif|else|while|for|in|break|continue|return|try|catch|pass|assert)\\b"
+        },
+        {
+            "name": "storage.type.class.fluxscript",
+            "match": "\\bclass\\b"
+        },
+        {
+            "name": "storage.type.function.fluxscript",
+            "match": "\\bfunc\\b"
+        },
+        {
+            "name": "keyword.declaration.alias.fluxscript",
+            "match": "\\balias\\b"
+        },
+        {
+            "name": "keyword.other.fluxscript",
+            "match": "\\bas\\b"
+        },
+        {
+            "name": "entity.name.function.special.fluxscript",
+            "match": "(?<=\\bfunc\\s)-(?:ready|always|keypress|exit|init)\\b"
+        },
+        {
+            "name": "entity.name.type.class.fluxscript",
+            "match": "(?<=\\bclass\\s)[A-Za-z_][A-Za-z0-9_]*"
+        },
+        {
+            "name": "support.function.gui.fluxscript",
+            "match": "\\b(?:windowAdd|windowBackground|windowResizable|windowLabel|windowButton|windowTextbox|windowCheckbox|windowSlider|windowProgressBar|windowImage|windowDrawRect|windowDrawSquare|windowDrawTriangle|windowDrawCircle|windowDrawLine|alert|confirm|timer)\\b"
+        },
+        {
+            "name": "support.function.builtin.fluxscript",
+            "match": "\\b(?:out|input|len|str|int|float|bool|type|range|wait|print|abs|min|max|round)\\b"
+        },
+        {
+            "name": "support.function.method.fluxscript",
+            "match": "(?<=\\.)(?:add|remove|pop|sort|rev|index|count|trim|startswith|endswith|find|has|keys|values|clear|append)\\b"
+        },
+        {
+            "name": "variable.other.property.fluxscript",
+            "match": "(?<=\\.)(?:text|color|position|size|visible|enabled|font|bold|angle|value|checked|detectmouse|detectMouseMoving|onclick|onrclick|onchange|mouseEnter|mouseLeave|context)\\b"
+        },
+        {
+            "name": "constant.language.boolean.fluxscript",
+            "match": "\\b(?:true|false|True|False)\\b"
+        },
+        {
+            "name": "constant.language.null.fluxscript",
+            "match": "\\bnil\\b"
+        },
+        {
+            "name": "keyword.operator.logical.fluxscript",
+            "match": "\\b(?:and|or|not)\\b"
+        },
+        {
+            "name": "constant.numeric.dimension.fluxscript",
+            "match": "\\b\\d+x\\d+\\b"
+        },
+        {
+            "name": "constant.numeric.imaginary.fluxscript",
+            "match": "\\b\\d+(?:\\.\\d+)?i\\b"
+        },
+        {
+            "name": "constant.numeric.fluxscript",
+            "match": "\\b\\d+(?:\\.\\d+)?\\b"
+        },
+        {
+            "name": "keyword.operator.assignment.fluxscript",
+            "match": "\\+=|-=|\\*=|/=|%=|\\^=|(?<![=!<>])=(?!=)"
+        },
+        {
+            "name": "keyword.operator.comparison.fluxscript",
+            "match": "==|!=|<=|>=|<|>"
+        },
+        {
+            "name": "keyword.operator.arithmetic.fluxscript",
+            "match": "//|[+*/%\\^\\-]"
+        },
+        {
+            "name": "entity.name.function.fluxscript",
+            "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+        }
+    ]
+}
