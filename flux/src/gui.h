@@ -14,6 +14,8 @@ struct Event {
     Value value;
 };
 
+Value objectMethod(int id,const std::string& name,const std::vector<Value>& args);
+
 // Native GUI functions
 Value invoke(
     const std::string& name,

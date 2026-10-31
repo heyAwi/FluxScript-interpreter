@@ -6,6 +6,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 #include <stdexcept>
 #include <cmath>
 #include <limits>
@@ -381,6 +382,84 @@ Value Interpreter::native(const std::string& n, const std::vector<Value>& a) {
     }
     throw std::runtime_error("NameError: unknown native function '" + n + "'");
 }
+Value Interpreter::callDll(const Module& module, const std::string& name, const std::vector<Value>& args) {
+#ifdef _WIN32
+    if (!module.library) throw std::runtime_error("ModuleError: native module is not loaded");
+    // ABI: const char* flux_function(const char* commaSeparatedNumbers)
+    using NativeFunction = const char* (__cdecl *)(const char*);
+    const std::string symbol = "flux_" + name;
+    auto fn = reinterpret_cast<NativeFunction>(GetProcAddress(module.library, symbol.c_str()));
+    if (!fn) throw std::runtime_error("ModuleError: DLL does not export '" + symbol + "'");
+    // ABI v2: F2|count|<type><byte-length>:<data>...
+    // Legacy DLLs keep receiving comma-separated numbers.
+    using AbiVersion = int (__cdecl *)();
+    auto versionFn = reinterpret_cast<AbiVersion>(
+        GetProcAddress(module.library, "flux_abi_version"));
+    const int version = versionFn ? versionFn() : 1;
+    std::ostringstream input;
+    input << std::setprecision(17);
+    if (version == 2) {
+        input << "F2|" << args.size() << '|';
+        for (const Value& arg : args) {
+            std::string data;
+            char kind;
+            if (arg.type == Value::Type::NUMBER) {
+                if (!std::isfinite(arg.number))
+                    throw std::runtime_error("TypeError: non-finite native argument");
+                std::ostringstream number;
+                number << std::setprecision(17) << arg.number;
+                data = number.str();
+                kind = 'N';
+            } else if (arg.type == Value::Type::STRING) {
+                data = arg.text;
+                if (data.find('\0') != std::string::npos)
+                    throw std::runtime_error("TypeError: native string contains NUL byte");
+                kind = 'S';
+            } else {
+                throw std::runtime_error(
+                    "TypeError: native function '" + name + "' expects number or string");
+            }
+            input << kind << data.size() << ':' << data;
+        }
+    } else if (version == 1) {
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            if (args[i].type != Value::Type::NUMBER)
+                throw std::runtime_error(
+                    "TypeError: native function '" + name + "' expects numeric arguments");
+            if (i) input << ',';
+            input << args[i].number;
+        }
+    } else {
+        throw std::runtime_error("ModuleError: unsupported DLL ABI version");
+    }
+    const std::string encoded = input.str();
+    const char* raw = fn(encoded.c_str());
+    if (!raw) throw std::runtime_error("ModuleError: native function returned null");
+    const std::string response(raw);
+    if (response.rfind("E:", 0) == 0)
+        throw std::runtime_error("ModuleError: " + response.substr(2));
+    if (response.rfind("error:", 0) == 0)
+        throw std::runtime_error("ModuleError: " + response);
+    if (response.rfind("S:", 0) == 0)
+        return Value::str(response.substr(2));
+
+    // New DLLs may return N:<number>; older DLLs return plain numbers.
+    const std::string numericText = response.rfind("N:", 0) == 0
+        ? response.substr(2) : response;
+    std::size_t consumed = 0;
+    double number = 0;
+    try { number = std::stod(numericText, &consumed); }
+    catch (const std::exception&) {
+        throw std::runtime_error("ModuleError: invalid native result from '" + symbol + "': " + response);
+    }
+    if (consumed != numericText.size() || !std::isfinite(number))
+        throw std::runtime_error("ModuleError: invalid native result from '" + symbol + "': " + response);
+    return Value::num(number);
+#else
+    (void)module; (void)name; (void)args;
+    throw std::runtime_error("ModuleError: native DLLs require Windows");
+#endif
+}
 Value Interpreter::method(const std::string& obj, const std::string& n, const std::vector<Value>& a) {
     Value v = lookup(obj);
     auto count = [&](size_t k) {
@@ -698,6 +777,12 @@ Value Interpreter::evaluate(const Expr* e) {
             }
             throw std::runtime_error("AttributeError: unknown method");
         } } catch(const std::runtime_error& er) { if(std::string(er.what()).find("NameError: undefined variable")!=0) throw; }
+        if(p->name.lexeme=="collides" || p->name.lexeme=="transformOnSheet" ||
+           p->name.lexeme=="transformOnChild" || p->name.lexeme=="transformOffChild") {
+            Value receiver=lookup(p->module);
+            if(receiver.type!=Value::Type::NUMBER)throw std::runtime_error("TypeError: GUI method requires a GUI object");
+            return fluxgui::objectMethod(static_cast<int>(receiver.number),p->name.lexeme,args);
+        }
         auto alias = moduleAliases.find(p->module);
         if (alias != moduleAliases.end() && alias->second == "console")
             return fluxconsole::run(p->name.lexeme, args);
@@ -708,6 +793,7 @@ Value Interpreter::evaluate(const Expr* e) {
                 "ModuleError: module '" + p->module + "' not loaded"
             );
         }
+        if (it->second->isNative) return callDll(*it->second, p->name.lexeme, args);
         return it->second->runtime->call(p->name.lexeme, args);
     }
     if (auto p = dynamic_cast<const BinaryExpr*>(e)) {
@@ -756,7 +842,7 @@ void Interpreter::execute(const Stmt* s) {
         if(!p->parent.empty() && !classes.count(p->parent))throw std::runtime_error("NameError: undefined parent class '"+p->parent+"'");
         classes[p->name.lexeme]=p; return;
     }
-    if(auto p=dynamic_cast<const SpecialStmt*>(s)) { events[p->name]=p; return; }
+    if(auto p=dynamic_cast<const SpecialStmt*>(s)) { if(p->name=="keypress") keypressHandlers.push_back(p); else events[p->name]=p; return; }
     if(auto p=dynamic_cast<const PropertyAssignStmt*>(s)) {
         Value obj=evaluate(p->base.get());
         if(obj.type==Value::Type::NUMBER) {
@@ -935,35 +1021,75 @@ void Interpreter::execute(const Stmt* s) {
         );
     }
     if (auto p = dynamic_cast<const GetStmt*>(s)) {
-        std::string name = p->module.lexeme;
+        const std::string name = p->module.lexeme;
         if (name == "console") {
             moduleAliases[p->alias.empty() ? name : p->alias] = name;
             return;
         }
-        if (modules.count(name)) {
-            if (!p->alias.empty()) modules[p->alias] = std::move(modules[name]);
+        const auto endsWith = [](const std::string& text, const std::string& suffix) {
+            return text.size() >= suffix.size() && text.compare(text.size()-suffix.size(), suffix.size(), suffix) == 0;
+        };
+        const bool explicitFlux = endsWith(name, ".flux");
+        const bool explicitDll = endsWith(name, ".dll");
+        const std::string base = explicitFlux ? name.substr(0,name.size()-5) :
+                                 explicitDll ? name.substr(0,name.size()-4) : name;
+        if (base.empty()) throw std::runtime_error("ModuleError: empty module name");
+        std::string relative = base;
+        std::replace(relative.begin(),relative.end(),'.','/');
+        // Reject traversal and absolute paths; module imports stay under moduleDir.
+        if (relative[0]=='/' || relative.find("..")!=std::string::npos ||
+            relative.find('\\')!=std::string::npos || relative.find(':')!=std::string::npos)
+            throw std::runtime_error("ModuleError: invalid module path");
+        const std::string fluxPath = moduleDir + "/" + relative + ".flux";
+        const std::string dllPath = moduleDir + "/" + relative + ".dll";
+        auto exists = [](const std::string& path) {
+            std::ifstream file(path, std::ios::binary);
+            return file.good();
+        };
+        const bool hasFlux = exists(fluxPath);
+        const bool hasDll = exists(dllPath);
+        if (!explicitFlux && !explicitDll && hasFlux && hasDll)
+            throw std::runtime_error("ModuleError: both '" + fluxPath + "' and '" + dllPath + "' exist; specify .flux or .dll");
+        const bool nativeDll = explicitDll || (!explicitFlux && !hasFlux && hasDll);
+        const std::string path = nativeDll ? dllPath : fluxPath;
+        if (!(nativeDll ? hasDll : hasFlux))
+            throw std::runtime_error("ModuleError: cannot open '" + path + "'");
+        const std::string shortName = base.substr(base.find_last_of('.') == std::string::npos ? 0 : base.find_last_of('.')+1);
+        const std::string exposed = p->alias.empty() ? shortName : p->alias;
+        const std::string cacheKey = std::string(nativeDll ? "dll:" : "flux:") + base;
+        auto cached = modules.find(cacheKey);
+        if (cached != modules.end()) {
+            modules[exposed] = cached->second;
             return;
         }
-        std::string relative=name;
-        std::replace(relative.begin(),relative.end(),'.','/');
-        std::string path = moduleDir + "/" + relative + ".flux";
-        std::ifstream file(path.c_str());
-        if (!file) {
-            throw std::runtime_error(
-                "ModuleError: cannot open '" + path + "'"
-            );
+        std::shared_ptr<Module> mod = std::make_shared<Module>();
+        if (nativeDll) {
+#ifdef _WIN32
+            // Use an explicit path so Windows does not search unrelated DLL directories.
+            const int wideLength = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, nullptr, 0);
+            if (!wideLength) throw std::runtime_error("ModuleError: invalid UTF-8 module path");
+            std::wstring widePath(static_cast<std::size_t>(wideLength), L'\0');
+            MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, &widePath[0], wideLength);
+            mod->library = LoadLibraryW(widePath.c_str());
+            if (!mod->library) throw std::runtime_error("ModuleError: LoadLibrary failed for '" + path + "' (Windows error " + std::to_string(GetLastError()) + ")");
+            mod->isNative = true;
+#else
+            throw std::runtime_error("ModuleError: DLL modules require Windows");
+#endif
+        } else {
+            std::ifstream file(path, std::ios::binary);
+            if (!file) throw std::runtime_error("ModuleError: cannot open '" + path + "'");
+            std::ostringstream buffer;
+            buffer << file.rdbuf();
+            Lexer lexer(buffer.str());
+            Parser parser(lexer.scanTokens());
+            mod->statements = parser.parse();
+            mod->runtime.reset(new Interpreter());
+            mod->runtime->setModuleDir(moduleDir);
+            mod->runtime->interpret(mod->statements);
         }
-        std::ostringstream buffer;
-        buffer << file.rdbuf();
-        Lexer lexer(buffer.str());
-        Parser parser(lexer.scanTokens());
-        std::unique_ptr<Module> mod(new Module());
-        mod->statements = parser.parse();
-        mod->runtime.reset(new Interpreter());
-        mod->runtime->setModuleDir(moduleDir);
-        mod->runtime->interpret(mod->statements);
-        std::string shortName=name.substr(name.find_last_of('.')==std::string::npos?0:name.find_last_of('.')+1);
-        modules[p->alias.empty() ? shortName : p->alias] = std::move(mod);
+        modules[cacheKey] = mod;
+        modules[exposed] = mod;
         return;
     }
     throw std::runtime_error(
@@ -980,12 +1106,12 @@ void Interpreter::interpret(
     if(events.count("start")) runEvent(events.at("start"));
     if(events.count("ready")) runEvent(events.at("ready"));
     const SpecialStmt* tick=events.count("always")?events.at("always"):nullptr;
-    const SpecialStmt* key=events.count("keypress")?events.at("keypress"):nullptr;
+    const bool hasKeys=!keypressHandlers.empty();
     double fps=60; if(tick && !tick->args.empty()) fps=std::max(1.0,std::min(60.0,numeric(evaluate(tick->args[0].get()))));
-    if(tick || key || fluxgui::alive()) {
+    if(tick || hasKeys || fluxgui::alive()) {
         fluxRunning=1; auto previousHandler=std::signal(SIGINT,fluxStop);
         using clock=std::chrono::steady_clock; auto next=clock::now();
-        while(fluxRunning && (tick || key || fluxgui::alive())) {
+        while(fluxRunning && (tick || hasKeys || fluxgui::alive())) {
             for(const auto& event:fluxgui::pollEvents()) {
                 if(event.kind=="timer") {
                     auto timerIt=timerCallbacks.find(event.id);
@@ -1004,8 +1130,89 @@ void Interpreter::interpret(
                 if(it!=extraGuiCallbacks.end()) execute(it->second);
             }
 #ifdef _WIN32
-            if(key && _kbhit()) { int ch=_getch(); std::string pressed(1,static_cast<char>(ch)); if(ch==3){fluxRunning=0;break;} if(ch==32)pressed="space";
-                if(!key->args.empty() && evaluate(key->args[0].get()).display()==pressed) runEvent(key);
+            if(hasKeys) {
+                // Poll physical state, not _getch(), so combinations and GUI focus work.
+                static std::map<std::string,bool> previousKeys;
+                static const std::vector<std::pair<std::string,int>> keys=[] {
+                    std::vector<std::pair<std::string,int>> result;
+                    for(int i=0;i<26;++i)result.push_back({std::string(1,char('a'+i)), 'A'+i});
+                    for(int i=0;i<10;++i)result.push_back({std::string(1,char('0'+i)), '0'+i});
+                    for(int i=1;i<=12;++i)result.push_back({"f"+std::to_string(i), VK_F1+i-1});
+                    const std::pair<const char*,int> special[]={
+                        {"enter",VK_RETURN},{"tab",VK_TAB},{"backspace",VK_BACK},{"space",VK_SPACE},
+                        {"esc",VK_ESCAPE},{"up",VK_UP},{"down",VK_DOWN},{"left",VK_LEFT},{"right",VK_RIGHT},
+                        {"lctrl",VK_LCONTROL},{"rctrl",VK_RCONTROL},{"lshift",VK_LSHIFT},{"rshift",VK_RSHIFT},
+                        {"lalt",VK_LMENU},{"ralt",VK_RMENU},
+                        {"m1",VK_LBUTTON},{"m2",VK_RBUTTON},{"m3",VK_MBUTTON},
+                        {"m4",VK_XBUTTON1},{"m5",VK_XBUTTON2}};
+                    for(const auto& v:special)result.push_back({v.first,v.second});
+                    return result;
+                }();
+                std::map<std::string,bool> down;
+                DWORD foregroundPid=0;
+                HWND foreground=GetForegroundWindow();
+                if(foreground) GetWindowThreadProcessId(foreground,&foregroundPid);
+                bool focused=foregroundPid==GetCurrentProcessId();
+                for(const auto& entry:keys) down[entry.first]=focused && (GetAsyncKeyState(entry.second)&0x8000)!=0;
+                down["ctrl"]=down["lctrl"]||down["rctrl"];
+                down["shift"]=down["lshift"]||down["rshift"];
+                down["alt"]=down["lalt"]||down["ralt"];
+                auto combinations=[&](const Expr* expr, auto&& self, std::vector<std::string>& out)->bool {
+                    if(auto b=dynamic_cast<const BinaryExpr*>(expr)) {
+                        if(b->op.type!=FluxTokenType::AND)return false;
+                        return self(b->left.get(),self,out)&&self(b->right.get(),self,out);
+                    }
+                    if(auto lit=dynamic_cast<const LiteralExpr*>(expr)) {
+                        if(lit->token.type!=FluxTokenType::STRING)return false;
+                        out.push_back(lit->token.lexeme);return true;
+                    }
+                    return false;
+                };
+                struct Match { const SpecialStmt* handler; std::string pressed; size_t specificity; };
+                std::vector<Match> matches;
+                size_t best=0;
+                for(const auto* handler:keypressHandlers) {
+                    std::vector<std::string> parts;
+                    if(!combinations(handler->args[0].get(),combinations,parts)) {
+                        Value v=evaluate(handler->args[0].get());
+                        if(v.type!=Value::Type::STRING)throw std::runtime_error("TypeError: -keypress expects string keys");
+                        parts.push_back(v.text);
+                    }
+                    bool active=true, fresh=false;
+                    for(const auto& part:parts) {
+                        if(part=="any" || part=="scroll" || part=="scrollup" || part=="scrolldown") { active=false;break; }
+                        auto it=down.find(part);
+                        if(it==down.end())throw std::runtime_error("ValueError: unknown key '"+part+"'");
+                        if(!it->second)active=false;
+                        if(it->second&&!previousKeys[part])fresh=true;
+                    }
+                    if(active && fresh) {
+                        size_t specificity=parts.size();
+                        if(specificity>best)best=specificity;
+                        matches.push_back({handler,parts.back(),specificity});
+                    }
+                }
+                // Only the most specific simultaneous combination wins.
+                for(const auto& match:matches) if(match.specificity==best) {
+                    if(match.handler->args.size()==2) {
+                        auto param=dynamic_cast<const VariableExpr*>(match.handler->args[1].get());
+                        if(param) { frames.emplace_back(); frames.back()[param->name.lexeme]=Value::str(match.pressed); }
+                        try { runEvent(match.handler); } catch(...) { if(param)frames.pop_back();throw; }
+                        if(param)frames.pop_back();
+                    } else runEvent(match.handler);
+                }
+                // Wildcard handlers observe the same event without consuming GUI clicks.
+                for(const auto& entry:keys) if(down[entry.first]&&!previousKeys[entry.first]) {
+                    for(const auto* handler:keypressHandlers) {
+                        auto lit=dynamic_cast<const LiteralExpr*>(handler->args[0].get());
+                        if(!lit||lit->token.lexeme!="any")continue;
+                        auto param=handler->args.size()==2?dynamic_cast<const VariableExpr*>(handler->args[1].get()):nullptr;
+                        if(param) {frames.emplace_back();frames.back()[param->name.lexeme]=Value::str(entry.first);}
+                        try {runEvent(handler);} catch(...) {if(param)frames.pop_back();throw;}
+                        if(param)frames.pop_back();
+                    }
+                }
+                previousKeys=std::move(down);
             }
 #endif
             if(tick && clock::now()>=next) { runEvent(tick); next+=std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(1.0/fps)); if(next<clock::now())next=clock::now(); }

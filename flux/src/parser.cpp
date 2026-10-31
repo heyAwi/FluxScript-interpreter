@@ -845,11 +845,24 @@ StmtPtr Parser::statement() {
 
             std::vector<ExprPtr> args;
             if (match(FluxTokenType::LPAREN)) {
-                if (!check(FluxTokenType::RPAREN)) {
+                if (name.lexeme == "keypress") {
+                    if (check(FluxTokenType::RPAREN))
+                        throw std::runtime_error("SyntaxError at line " + std::to_string(name.line) + ": -keypress requires an input");
+                    // Preserve the AND expression tree for simultaneous key matching.
+                    args.push_back(expression());
+                    if (match(FluxTokenType::COMMA)) {
+                        Token parameter = consume(FluxTokenType::IDENTIFIER, "expected input parameter name");
+                        args.push_back(ExprPtr(new VariableExpr(parameter)));
+                    }
+                    if (match(FluxTokenType::COMMA))
+                        throw std::runtime_error("SyntaxError at line " + std::to_string(name.line) + ": -keypress expects at most 2 arguments, got 3");
+                } else if (!check(FluxTokenType::RPAREN)) {
                     do { args.push_back(expression()); } while (match(FluxTokenType::COMMA));
                 }
                 consume(FluxTokenType::RPAREN, "expected )");
             }
+            if (name.lexeme == "keypress" && args.empty())
+                throw std::runtime_error("SyntaxError at line " + std::to_string(name.line) + ": -keypress requires an input");
 
             newlines();
             ++functionDepth;

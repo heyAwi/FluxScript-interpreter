@@ -4,6 +4,12 @@
 #include "value.h"
 #include <unordered_map>
 #include <memory>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 struct BreakSignal {};
 struct ContinueSignal {};
 struct ReturnSignal {
@@ -20,6 +26,7 @@ class Interpreter {
     std::unordered_map<std::string, Function> functions;
     std::unordered_map<std::string,const ClassStmt*> classes;
     std::unordered_map<std::string,const SpecialStmt*> events;
+    std::vector<const SpecialStmt*> keypressHandlers;
     std::unordered_map<int,const Stmt*> guiCallbacks;
     Value invoke(const FuncStmt* f,const std::vector<Value>& args, const Value* self=nullptr, const std::vector<std::string>& names={});
     Value invokeLambda(const Value& fn,const std::vector<Value>& args);
@@ -27,8 +34,13 @@ class Interpreter {
     struct Module {
         std::vector<StmtPtr> statements;
         std::unique_ptr<Interpreter> runtime;
+#ifdef _WIN32
+        HMODULE library = nullptr;
+        ~Module() { if (library) FreeLibrary(library); }
+#endif
+        bool isNative = false;
     };
-    std::unordered_map<std::string, std::unique_ptr<Module>> modules;
+    std::unordered_map<std::string, std::shared_ptr<Module>> modules;
     std::string moduleDir = "module";
     std::unordered_map<std::string,std::string> moduleAliases;
     Value evaluate(const Expr* e);
@@ -37,6 +49,7 @@ class Interpreter {
     void assign(const std::string& name, Value v);
     Value call(const std::string& name, const std::vector<Value>& args, const std::vector<std::string>& names={});
     Value native(const std::string& name, const std::vector<Value>& args);
+    Value callDll(const Module& module, const std::string& name, const std::vector<Value>& args);
     Value method(const std::string& object, const std::string& name, const std::vector<Value>& args);
     static Value binary(FluxTokenType op, const Value& a, const Value& b);
 public:

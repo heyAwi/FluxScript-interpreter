@@ -45,6 +45,11 @@ struct Item {
     bool window = false;
     bool hovering = false;
     bool bold = false;
+    double angle = 0;
+    int transformParent = 0;
+    int sheetColumns = 1, sheetRows = 1;
+    double sheetFps = 0;
+    Clock::time_point sheetStart = Clock::now();
 
     std::string kind;
     std::string font = "Arial";
@@ -752,7 +757,7 @@ LRESULT CALLBACK windowProc(
         int id = findId(hwnd);
 
         if (id &&
-            items.at(id).kind == "image") {
+            (items.at(id).kind == "image" || items.at(id).kind.rfind("draw",0)==0)) {
 
             PAINTSTRUCT ps;
             HDC dc = BeginPaint(hwnd, &ps);
@@ -768,16 +773,30 @@ LRESULT CALLBACK windowProc(
                 parentBrush(item)
             );
 
+            Gdiplus::Graphics graphics(dc);
+            graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            graphics.TranslateTransform(rect.right/2.0f,rect.bottom/2.0f);
+            graphics.RotateTransform(static_cast<Gdiplus::REAL>(item.angle));
+            graphics.TranslateTransform(-rect.right/2.0f,-rect.bottom/2.0f);
             if (item.image) {
-                Gdiplus::Graphics graphics(dc);
-
-                graphics.DrawImage(
-                    item.image.get(),
-                    0,
-                    0,
-                    rect.right,
-                    rect.bottom
-                );
+                if(item.sheetColumns>1 || item.sheetRows>1) {
+                    int total=item.sheetColumns*item.sheetRows;
+                    double elapsed=std::chrono::duration<double>(Clock::now()-item.sheetStart).count();
+                    int frame=static_cast<int>(elapsed*item.sheetFps)%total;
+                    int w=static_cast<int>(item.image->GetWidth())/item.sheetColumns;
+                    int h=static_cast<int>(item.image->GetHeight())/item.sheetRows;
+                    graphics.DrawImage(item.image.get(),Gdiplus::Rect(0,0,rect.right,rect.bottom),
+                        (frame%item.sheetColumns)*w,(frame/item.sheetColumns)*h,w,h,Gdiplus::UnitPixel);
+                } else graphics.DrawImage(item.image.get(),0,0,rect.right,rect.bottom);
+            } else if(item.kind.rfind("draw",0)==0) {
+                Gdiplus::Color c(255,GetRValue(item.color),GetGValue(item.color),GetBValue(item.color));
+                Gdiplus::SolidBrush brush(c);
+                Gdiplus::Pen pen(c,2.0f);
+                float w=static_cast<float>(rect.right),h=static_cast<float>(rect.bottom);
+                if(item.kind=="drawRect" || item.kind=="drawSquare")graphics.FillRectangle(&brush,0.0f,0.0f,w,h);
+                else if(item.kind=="drawCircle")graphics.FillEllipse(&brush,0.0f,0.0f,w,h);
+                else if(item.kind=="drawLine")graphics.DrawLine(&pen,0.0f,0.0f,w,h);
+                else if(item.kind=="drawTriangle") {Gdiplus::PointF pts[3]={{w/2,0},{w,h},{0,h}};graphics.FillPolygon(&brush,pts,3);}
             }
 
             EndPaint(hwnd, &ps);
@@ -986,6 +1005,7 @@ std::vector<Event> pollEvents() {
     }
 
     auto now = Clock::now();
+    for(auto& entry:items) if(entry.second.kind=="image" && entry.second.sheetFps>0 && IsWindow(entry.second.hwnd)) InvalidateRect(entry.second.hwnd,nullptr,FALSE);
 
     for (auto it = timers.begin();
          it != timers.end();) {
@@ -1085,6 +1105,7 @@ Value property(
         rect.bottom = point.y + height;
     }
 
+    if (name == "angle") return Value::num(item.angle);
     if (name == "text")
         return Value::str(
             textOf(item.hwnd)
@@ -1175,6 +1196,11 @@ void setProperty(
 ) {
     Item& item = get(id);
 
+    if (name == "angle") {
+        item.angle=number(value);
+        InvalidateRect(item.hwnd,nullptr,TRUE);
+        return;
+    }
     if (name == "text") {
         SetWindowTextW(
             item.hwnd,
@@ -1193,7 +1219,16 @@ void setProperty(
 
     if (name == "position") {
         auto p = dimensions(value);
-
+        RECT previous{};GetWindowRect(item.hwnd,&previous);
+        POINT oldPoint{previous.left,previous.top};
+        if(item.parent)ScreenToClient(get(item.parent).hwnd,&oldPoint);
+        int dx=p.first-oldPoint.x,dy=p.second-oldPoint.y;
+        for(auto& entry:items) if(entry.second.transformParent==id && IsWindow(entry.second.hwnd)) {
+            RECT childRect{};GetWindowRect(entry.second.hwnd,&childRect);
+            POINT pt{childRect.left,childRect.top};
+            if(entry.second.parent)ScreenToClient(get(entry.second.parent).hwnd,&pt);
+            SetWindowPos(entry.second.hwnd,nullptr,pt.x+dx,pt.y+dy,0,0,SWP_NOSIZE|SWP_NOZORDER);
+        }
         SetWindowPos(
             item.hwnd,
             nullptr,
@@ -1643,6 +1678,15 @@ Value invoke(
         return Value::num(id);
     }
 
+    if (name == "windowDrawRect" || name == "windowDrawSquare" ||
+        name == "windowDrawTriangle" || name == "windowDrawCircle" || name == "windowDrawLine") {
+        argc(4);
+        int id=makeControl(windowClass,"draw"+name.substr(10),args[0],args[1],"",0);
+        items[id].color=parseColor(string(args[2]));
+        items[id].angle=number(args[3]);
+        InvalidateRect(items[id].hwnd,nullptr,TRUE);
+        return Value::num(id);
+    }
     if (name == "windowImage") {
         argc(1);
 
@@ -1670,6 +1714,37 @@ Value invoke(
         "GUIError: unknown native function '" +
         name + "'"
     );
+}
+
+Value objectMethod(int id,const std::string& name,const std::vector<Value>& args) {
+    Item& item=get(id);
+    if(name=="collides") {
+        if(args.size()!=1)throw std::runtime_error("TypeError: collides expects 1 argument");
+        Item& other=get(integer(args[0]));
+        RECT a{},b{},intersection{};
+        GetWindowRect(item.hwnd,&a);GetWindowRect(other.hwnd,&b);
+        return Value::truth(IntersectRect(&intersection,&a,&b)!=FALSE);
+    }
+    if(name=="transformOnSheet") {
+        if(args.size()!=2 || item.kind!="image")throw std::runtime_error("GUIError: transformOnSheet requires an image, dimensions and FPS");
+        auto sz=dimensions(args[0]);double fps=number(args[1]);
+        if(sz.first<1||sz.second<1||fps<=0||fps>240)throw std::runtime_error("GUIError: invalid sprite sheet settings");
+        item.sheetColumns=sz.first;item.sheetRows=sz.second;item.sheetFps=fps;item.sheetStart=Clock::now();
+        return Value();
+    }
+    if(name=="transformOnChild") {
+        if(args.size()!=1)throw std::runtime_error("TypeError: transformOnChild expects 1 argument");
+        int parentId=integer(args[0]);if(parentId==id)throw std::runtime_error("GUIError: object cannot parent itself");
+        Item& parent=get(parentId);
+        for(int n=parentId;n;n=items.at(n).transformParent)if(n==id)throw std::runtime_error("GUIError: cyclic hierarchy");
+        item.transformParent=parentId;
+        return Value();
+    }
+    if(name=="transformOffChild") {
+        if(!args.empty())throw std::runtime_error("TypeError: transformOffChild expects 0 arguments");
+        item.transformParent=0;return Value();
+    }
+    throw std::runtime_error("GUIError: unknown GUI method '"+name+"'");
 }
 
 void shutdown() {

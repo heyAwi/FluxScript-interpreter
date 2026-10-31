@@ -9,7 +9,7 @@
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
-        std::cerr << "Usage: flux.exe file.flx\n";
+        std::cerr << "Usage: flux.exe file.flux\n";
         return 1;
     }
 

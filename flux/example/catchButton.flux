@@ -68,7 +68,7 @@ windowAdd("Catch the Button! - FluxScript", 600x450) {
 
                 target.text = "PLAY AGAIN"
                 target.color = "green"
-                target.position = [220, 190]
+                target.position = 220x190
             }
         } else {
             score = 0
